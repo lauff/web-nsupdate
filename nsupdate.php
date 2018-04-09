@@ -13,16 +13,6 @@
 require("data/nsupdate-defs.php");
 
 
-/**
- * Template to generate command script for nsupdate(8).
- */
-$NSUPATE_COMMAND_TEMPLATE = 'server {$p_hostinfo["nameserver"]}
-zone $p_domain
-update delete $p_hostname
-update add $p_hostname {$p_hostinfo["ttl"]} A $p_hostaddr
-send
-';
-
 
 /**
  * Web page with form for manual entry.
@@ -40,8 +30,12 @@ $NSUPDATE_MANUAL_FORM = '<html>
 	<td><input type="text" name="hostname" /></td>
 </tr>
 <tr>
-	<td><label for="hostaddr">Host Address:</label></td>
-	<td><input type="text" name="hostaddr" /></td>
+	<td><label for="ipv4">IPv4 Address:</label></td>
+	<td><input type="text" name="ipv4" /></td>
+</tr>
+<tr>
+	<td><label for="ipv6">IPv6 Address:</label></td>
+	<td><input type="text" name="ipv6" /></td>
 </tr>
 <tr>
 	<td><label for="key">Authentication Key:</label></td>
@@ -60,20 +54,6 @@ $NSUPDATE_MANUAL_FORM = '<html>
 </html>
 ';
 
-
-/**
- * Web page with success resposne for manual update.
- */
-$NSUPATE_MANUAL_RESPONSE = '<html>
-<head>
-<title>web-nsupdate: Update Successful</title>
-</head>
-<body>
-<h1>web-nsupdate: Manual Update Successful</h1>
-<p>Host <i>{$p_hostname}</i> has been assigned address <i>$p_hostaddr</i>.</p>
-</body>
-</html>
-';
 
 
 /**
@@ -137,18 +117,33 @@ function extract_domain_from_hostname($p_hostname)
 
 
 /**
- * Determine whether a host is already defined to a given address in the DNS
+ * Determine whether a host is already defined to a given ipv4 address in the DNS
  * @param $p_hostname  The fully qualified host name.
- * @param $p_hostaddr  The expected IP address of the host.
+ * @param $p_ipv4  The expected IP address of the host.
  * @param $p_nameserver  Server to query.
- * @return  If the IP address in DNS matches the $p_hostaddr value.
+ * @return  If the IP address in DNS matches the $p_ipv4 value.
  */
-function host_addr_matches($p_hostname, $p_hostaddr, $p_nameserver)
+function host_addr_ipv4_matches($p_hostname, $p_ipv4, $p_nameserver)
 {
 	$cmd = sprintf("host -t A %s %s", escapeshellarg($p_hostname), escapeshellarg($p_nameserver));
 	$a = preg_split('/\s+/', trim(shell_exec($cmd)));
 	$addr = $a[count($a)-1];
-	return ($addr == $p_hostaddr);
+	return ($addr == $p_ipv4);
+}
+
+/**
+ * Determine whether a host is already defined to a given ipv4 address in the DNS
+ * @param $p_hostname  The fully qualified host name.
+ * @param $p_ipv4  The expected IP address of the host.
+ * @param $p_nameserver  Server to query.
+ * @return  If the IP address in DNS matches the $p_ipv4 value.
+ */
+function host_addr_ipv6_matches($p_hostname, $p_ipv6, $p_nameserver)
+{
+	$cmd = sprintf("host -t AAAA %s %s", escapeshellarg($p_hostname), escapeshellarg($p_nameserver));
+	$a = preg_split('/\s+/', trim(shell_exec($cmd)));
+	$addr = $a[count($a)-1];
+	return ($addr == $p_ipv6);
 }
 
 
@@ -218,22 +213,38 @@ if (!empty($_REQUEST['hostname'])) {
 	# "host" is deprecated - "hostname" is preferred
 	$p_hostname = $_REQUEST['host'];
 } else {
-	send_error(400, "Failed to determine client hostname (parameter \$hostname).");
+	send_error(400, "nohost - Failed to determine client hostname (parameter \$hostname).");
 }
 
-if (!empty($_REQUEST['hostaddr'])) {
-	$p_hostaddr = $_REQUEST['hostaddr'];
-} elseif (!empty($_REQUEST['addr'])) {
-	$p_hostaddr = $_REQUEST['addr'];
+if (!empty($_REQUEST['ipv4'])) {
+	$p_ipv4 = $_REQUEST['ipv4'];
+} /* elseif (!empty($_REQUEST['addr'])) {
+	$p_ipv4 = $_REQUEST['addr'];
 } elseif (!empty($_SERVER['REMOTE_ADDR'])) {
-	$p_hostaddr = $_SERVER['REMOTE_ADDR'];
+	$p_ipv4 = $_SERVER['REMOTE_ADDR'];
+} */ else {
+	$p_ipv4 = null;
+}
+
+// sanity check ipv4 address, should be improved
+if ($p_ipv4 == "") $p_ipv4 = null;
+
+if (!empty($_REQUEST['ipv6'])) {
+	$p_ipv6 = $_REQUEST['ipv6'];
 } else {
-	send_error(400, "Failed to determine client address (parameter \$hostaddr).");
+	$p_ipv6 = null;
+}
+
+// sanity check ipv6 address, should be improved
+if ($p_ipv6 == "") $p_ipv6 = null;
+
+if (!$p_ipv4 && !$p_ipv6) {
+	send_error(400, "Failed to determine client ipv4 or ipv6 address");
 }
 
 $p_key = $_REQUEST['key'];
 if (empty($p_key)) {
-	send_error(403, "Failed to acquire authentication key (parameter \$key).");
+	send_error(403, "badauth - Failed to acquire authentication key (parameter \$key).");
 }
 
 $p_hostinfo = get_hostinfo($p_hostname);
@@ -246,9 +257,27 @@ $p_domain = extract_domain_from_hostname($p_hostname);
 #
 # Check if address has changed.
 #
-if (host_addr_matches($p_hostname, $p_hostaddr, $p_hostinfo['nameserver'])) {
-	send_error(200, "Not updated - address $p_hostaddr already assigned to host $p_hostname.");
+
+if ($p_ipv4 && $p_ipv6 
+    && host_addr_ipv4_matches($p_hostname, $p_ipv4, $p_hostinfo['nameserver'])
+	&& host_addr_ipv6_matches($p_hostname, $p_ipv6, $p_hostinfo['nameserver']) ) {
+	send_error(200, "nochg - Not updated - addresses ipv4 $p_ipv4 and ipv6 $p_ipv6 already assigned to host $p_hostname.");
+} elseif ($p_ipv4 && host_addr_ipv4_matches($p_hostname, $p_ipv4, $p_hostinfo['nameserver'])) {
+	send_error(200, "nochg - Not updated - address ipv4 $p_ipv4 already assigned to host $p_hostname.");
+} elseif ($p_ipv6 && host_addr_ipv6_matches($p_hostname, $p_ipv6, $p_hostinfo['nameserver'])) {
+	send_error(200, "nochg - Not updated - address ipv6 $p_ipv6 already assigned to host $p_hostname.");
 }
+
+/**
+ * Template to generate command script for nsupdate(8).
+ */
+$NSUPATE_COMMAND_TEMPLATE = 'server {$p_hostinfo["nameserver"]}
+zone $p_domain
+update delete $p_hostname
+';
+if ($p_ipv4) $NSUPATE_COMMAND_TEMPLATE .= 'update add $p_hostname {$p_hostinfo["ttl"]} A $p_ipv4'."\n";
+if ($p_ipv6) $NSUPATE_COMMAND_TEMPLATE .= 'update add $p_hostname {$p_hostinfo["ttl"]} AAAA $p_ipv6'."\n";
+$NSUPATE_COMMAND_TEMPLATE .= "send\n";
 
 #
 # Generate a command script for nsupdate(8).
@@ -260,6 +289,7 @@ if (!$tmpfname) {
 eval("\$fcontent = \"$NSUPATE_COMMAND_TEMPLATE\";");
 file_write_string($tmpfname, $fcontent);
 
+//die("<pre>DEBUG\n" . $fcontent);
 
 #
 # Run the nsupdate(8) command.
@@ -271,6 +301,27 @@ if ($rc === FALSE || $ex != 0) {
 	send_error(500, "nsupdate command failed.");
 }
 
+
+/**
+ * Web page with success resposne for manual update.
+ */
+$NSUPATE_MANUAL_RESPONSE = '<html>
+<head>
+<title>Update Successful</title>
+</head>
+<body>
+<h1>Manual Update Successful</h1>
+<p>Host <i>{$p_hostname}</i> has been assigned address';
+
+if ($p_ipv4) $NSUPATE_MANUAL_RESPONSE .= ' <i>IPv4 $p_ipv4</i>';
+if ($p_ipv6) $NSUPATE_MANUAL_RESPONSE .= ' <i>IPv6 $p_ipv6</i>';
+
+$NSUPATE_MANUAL_RESPONSE .='</p>
+</body>
+</html>
+';
+
+
 #
 # Normally we exit quietly on success.
 # If we were running manually, send an HTML response.
@@ -278,6 +329,10 @@ if ($rc === FALSE || $ex != 0) {
 if ($_REQUEST['verbose']) {
 	eval("echo(\"" . addslashes($NSUPATE_MANUAL_RESPONSE) . "\");");
 } else {
-	send_error(200, "Successfully assigned address $p_hostaddr to host $p_hostname.");
+	$txt = "good - Successfully assigned address";
+	if ($p_ipv4) $txt .= " ipv4 $p_ipv4";
+	if ($p_ipv6) $txt .= " ipv6 $p_ipv6";
+	$txt .=  " to host $p_hostname.";
+	send_error(200, $txt);
 }
 
